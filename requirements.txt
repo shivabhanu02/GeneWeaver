@@ -1,0 +1,7 @@
+biopython
+numpy
+numba
+dask[distributed]
+textual
+pytest
+psutil
