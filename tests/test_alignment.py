@@ -42,3 +42,16 @@ def test_lowercase_sequences():
     assert result["score"] == 8
     assert result["aligned_sequence1"] == "ACGT"
     assert result["aligned_sequence2"] == "ACGT"
+
+
+def test_gap_alignment():
+    result = smith_waterman(
+        "ACGT",
+        "AGT",
+        mismatch_score=-5,
+        gap_penalty=-1,
+    )
+
+    assert result["score"] == 5
+    assert "-" in result["aligned_sequence1"] or "-" in result["aligned_sequence2"]
+    assert len(result["aligned_sequence1"]) == len(result["aligned_sequence2"])
