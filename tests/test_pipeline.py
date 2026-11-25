@@ -1,8 +1,7 @@
 
-from pathlib import Path
-
 import pytest
 
+import src.pipeline as pipeline_module
 from src.pipeline import run_pipeline
 
 
@@ -16,6 +15,10 @@ def sample_fasta(tmp_path):
     )
     return fasta_file
 
+
+# --------------------------------------------------
+# Existing pipeline tests
+# --------------------------------------------------
 
 def test_pipeline_processes_fasta_record(sample_fasta):
     result = run_pipeline(
@@ -119,7 +122,159 @@ def test_pipeline_rejects_invalid_guide_rna(sample_fasta):
 def test_pipeline_rejects_missing_fasta():
     with pytest.raises(FileNotFoundError):
         run_pipeline(
-            fasta_path=Path("missing_file.fasta"),
+            fasta_path="missing_file.fasta",
             target_sequence="ACGT",
             chunk_size=4,
+        )
+
+
+# --------------------------------------------------
+# Day 14: CPU/GPU integration tests
+# --------------------------------------------------
+
+def test_pipeline_cpu_backend(sample_fasta, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_module,
+        "_cuda_available",
+        lambda: False,
+    )
+
+    result = run_pipeline(
+        fasta_path=sample_fasta,
+        target_sequence="ACGT",
+        chunk_size=4,
+        execution_backend="cpu",
+    )
+
+    assert result["summary"]["alignment_backends"] == ["cpu"]
+    assert result["records"][0]["alignment_backend"] == "cpu"
+
+
+def test_pipeline_auto_falls_back_to_cpu(sample_fasta, monkeypatch):
+    monkeypatch.setattr(
+        pipeline_module,
+        "_cuda_available",
+        lambda: False,
+    )
+
+    result = run_pipeline(
+        fasta_path=sample_fasta,
+        target_sequence="ACGT",
+        chunk_size=4,
+        execution_backend="auto",
+    )
+
+    assert result["summary"]["alignment_backends"] == ["cpu"]
+
+
+def test_pipeline_gpu_backend_maps_coordinates(
+    sample_fasta,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        pipeline_module,
+        "_cuda_available",
+        lambda: True,
+    )
+
+    def fake_gpu_alignment(chunks, target_sequence):
+        assert target_sequence == "ACGT"
+        assert [chunk["sequence"] for chunk in chunks] == [
+            "ACGT",
+            "ACGT",
+        ]
+
+        results = []
+
+        for chunk in chunks:
+            results.append({
+                "record_id": chunk["record_id"],
+                "chunk_id": chunk["chunk_id"],
+                "start": chunk["start"],
+                "end": chunk["end"],
+                "alignment": {
+                    "score": 8,
+                    "aligned_sequence1": "ACGT",
+                    "aligned_sequence2": "ACGT",
+                    "start1": 0,
+                    "start2": 0,
+                    "end1": 4,
+                    "end2": 4,
+                },
+            })
+
+        return results
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_run_gpu_alignment",
+        fake_gpu_alignment,
+    )
+
+    result = run_pipeline(
+        fasta_path=sample_fasta,
+        target_sequence="ACGT",
+        chunk_size=4,
+        execution_backend="gpu",
+    )
+
+    alignments = result["records"][0]["alignments"]
+
+    assert result["summary"]["alignment_backends"] == ["gpu"]
+    assert result["records"][0]["alignment_backend"] == "gpu"
+
+    assert alignments[0]["alignment"]["start1"] == 0
+    assert alignments[0]["alignment"]["end1"] == 4
+
+    assert alignments[1]["alignment"]["start1"] == 4
+    assert alignments[1]["alignment"]["end1"] == 8
+
+
+def test_pipeline_gpu_requested_without_cuda(
+    sample_fasta,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        pipeline_module,
+        "_cuda_available",
+        lambda: False,
+    )
+
+    with pytest.raises(RuntimeError, match="Numba or CUDA"):
+        run_pipeline(
+            fasta_path=sample_fasta,
+            target_sequence="ACGT",
+            chunk_size=4,
+            execution_backend="gpu",
+        )
+
+
+def test_pipeline_gpu_rejects_unsupported_sequence_length(
+    sample_fasta,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        pipeline_module,
+        "_cuda_available",
+        lambda: True,
+    )
+
+    with pytest.raises(ValueError, match="supports sequences up to"):
+        run_pipeline(
+            fasta_path=sample_fasta,
+            target_sequence="A" * (
+                pipeline_module.MAX_SEQUENCE_LENGTH + 1
+            ),
+            chunk_size=4,
+            execution_backend="gpu",
+        )
+
+
+def test_pipeline_rejects_invalid_backend(sample_fasta):
+    with pytest.raises(ValueError, match="execution_backend"):
+        run_pipeline(
+            fasta_path=sample_fasta,
+            target_sequence="ACGT",
+            chunk_size=4,
+            execution_backend="invalid",
         )
